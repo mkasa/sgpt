@@ -29,6 +29,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/tbckr/sgpt/v2/pkg/fs"
@@ -60,6 +61,21 @@ type OpenAIClient struct {
 	chatSessionManager chat.SessionManager
 }
 
+// Check if the given endpoint is an Azure OpenAI endpoint
+func isAzureOpenAIEndpoint(endpoint string) bool {
+    // Clean the endpoint by removing trailing slash if present
+    endpoint = strings.TrimSuffix(endpoint, "/")
+
+    // Regular expression pattern for Azure OpenAI endpoint
+    pattern := `^https://[a-zA-Z0-9-]+\.openai\.azure\.com$`
+
+    matched, err := regexp.MatchString(pattern, endpoint)
+    if err != nil {
+        return false
+    }
+    return matched
+}
+
 // CreateClient creates a new OpenAI client with the given config and output writer.
 func CreateClient(config *viper.Viper, out io.Writer) (*OpenAIClient, error) {
 	// Check, if api key was set
@@ -68,6 +84,17 @@ func CreateClient(config *viper.Viper, out io.Writer) (*OpenAIClient, error) {
 		return nil, ErrMissingAPIKey
 	}
 	clientConfig := openai.DefaultConfig(apiKey)
+	// Check, if API base url was set
+	baseURL, isBaseURLSet := os.LookupEnv("OPENAI_API_BASE")
+	if isBaseURLSet {
+		// Set base url
+		clientConfig.BaseURL = baseURL
+		slog.Debug("Setting API base url to " + baseURL)
+		if isAzureOpenAIEndpoint(baseURL) {
+			clientConfig = openai.DefaultAzureConfig(apiKey, baseURL)
+			slog.Debug("API base url looks like an Azure OpenAI endpoint")
+		}
+	}
 
 	// Set HTTP Proxy
 	transport := &http.Transport{
@@ -77,14 +104,6 @@ func CreateClient(config *viper.Viper, out io.Writer) (*OpenAIClient, error) {
 		Transport: transport,
 	}
 	clientConfig.HTTPClient = httpClient
-
-	// Check, if API base url was set
-	baseURL, isSet := os.LookupEnv("OPENAI_API_BASE")
-	if isSet {
-		// Set base url
-		clientConfig.BaseURL = baseURL
-		slog.Debug("Setting API base url to " + baseURL)
-	}
 
 	// Initialize chat session manager
 	chatSessionManager, err := chat.NewFilesystemChatSessionManager(config)
