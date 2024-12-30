@@ -75,5 +75,6 @@ nav:
       - Docker: 'usage/docker.md'
       - Personas: 'usage/personas.md'
       - Proxy Support: 'usage/proxy.md'
+      - Azure OpenAI: 'usage/azure-openai.md'
   - Configuration: 'configuration.md'
   - Examples: 'examples.md'
