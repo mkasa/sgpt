@@ -37,11 +37,7 @@ import (
 func TestGetChatModifierShell(t *testing.T) {
 	config := createTestConfig(t)
 
-	err := os.Setenv("SHELL", "/bin/bash")
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, os.Unsetenv("SHELL"))
-	})
+	t.Setenv("SHELL", "/bin/bash")
 
 	modifier, err := GetChatModifier(config, "sh")
 	require.NoError(t, err)
@@ -57,10 +53,12 @@ You are an expert in %s and translate the question at the end to valid syntax.`
 
 	config := createTestConfig(t)
 
-	shellEnv := os.Getenv("SHELL")
+	prevShell, hadShell := os.LookupEnv("SHELL")
 	require.NoError(t, os.Unsetenv("SHELL"))
 	t.Cleanup(func() {
-		require.NoError(t, os.Setenv("SHELL", shellEnv))
+		if hadShell {
+			_ = os.Setenv("SHELL", prevShell)
+		}
 	})
 
 	modifier, err := GetChatModifier(config, "sh")
@@ -171,6 +169,34 @@ func TestGetChatModifierInvalidWhitespacesInName(t *testing.T) {
 	modifier, err = GetChatModifier(config, "my persona2")
 	require.Error(t, err)
 	require.Empty(t, modifier)
+}
+
+func TestGetChatModifierBuiltinCaseSensitive(t *testing.T) {
+	// #381 regression: the CLI's args channel used to lowercase the
+	// persona before it reached GetChatModifier, which masked the fact
+	// that built-in personas are matched with a case-sensitive switch
+	// (below). Now that all input channels pass the persona verbatim,
+	// this case-sensitivity is user-visible: "sh"/"code" resolve but
+	// "SH"/"Sh"/"CODE"/"Code" do not. Pin that here so a future change to
+	// GetChatModifier's matching can't silently drift from what the CLI
+	// layer assumes.
+	config := createTestConfig(t)
+	t.Setenv("SHELL", "/bin/bash")
+
+	for _, modifier := range []string{"sh", "code"} {
+		t.Run(modifier, func(t *testing.T) {
+			result, err := GetChatModifier(config, modifier)
+			require.NoError(t, err)
+			require.NotEmpty(t, result)
+		})
+	}
+
+	for _, modifier := range []string{"SH", "Sh", "CODE", "Code"} {
+		t.Run(modifier, func(t *testing.T) {
+			_, err := GetChatModifier(config, modifier)
+			require.ErrorIs(t, err, ErrUnsupportedModifier)
+		})
+	}
 }
 
 func TestGetChatModifierTxt(t *testing.T) {

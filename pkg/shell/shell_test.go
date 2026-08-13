@@ -27,6 +27,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 
@@ -232,7 +234,12 @@ func TestGetUserConfirmationAsked2Times(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, errWrite := stdinWriter.Write([]byte("abcd\n"))
+		// A single unrecognised byte with no newline, written separately
+		// from the confirming "Y\n" below. With getUserConfirmation's
+		// bufio.Reader now shared across loop iterations (#379), the "Y\n"
+		// written in the second Write call is still readable on the second
+		// iteration instead of being lost with a discarded reader.
+		_, errWrite := stdinWriter.Write([]byte("z"))
 		require.NoError(t, errWrite)
 		_, errWrite = stdinWriter.Write([]byte("Y\n"))
 		require.NoError(t, errWrite)
@@ -263,7 +270,25 @@ func TestGetUserConfirmationAsked2Times(t *testing.T) {
 	wg.Wait()
 }
 
+func TestGetUserConfirmation_BufferedInputNotLost(t *testing.T) {
+	// #379 regression: a single stream carrying an unrecognised byte
+	// followed by the confirming "Y\n" must not lose the "Y" to a discarded
+	// bufio.Reader's internal buffer. Using a plain strings.Reader (no
+	// goroutines) makes this deterministic - the old code would hang or
+	// error on the second ReadRune once the buffered "Y\n" is gone.
+	input := strings.NewReader("zY\n")
+	var output bytes.Buffer
+
+	ok, err := getUserConfirmation(input, &output)
+
+	require.NoError(t, err)
+	require.True(t, ok)
+}
+
 func TestExecuteShellCommandEcho(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell execution tests require bash and are not supported on Windows")
+	}
 	stdoutReader, stdoutWriter := io.Pipe()
 
 	var wg sync.WaitGroup
@@ -287,7 +312,39 @@ func TestExecuteShellCommandEcho(t *testing.T) {
 	wg.Wait()
 }
 
+func TestExecuteShellCommand_StderrForwarded(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell execution tests require bash and are not supported on Windows")
+	}
+	// #380 regression: a failing command's stderr must reach the output
+	// writer instead of being silently discarded by os/exec.
+	stdoutReader, stdoutWriter := io.Pipe()
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var buf bytes.Buffer
+		_, errRead := io.Copy(&buf, stdoutReader)
+		require.NoError(t, errRead)
+		require.NoError(t, stdoutReader.Close())
+		require.Contains(t, buf.String(), "oops")
+	}()
+
+	err := executeShellCommand(context.Background(), stdoutWriter, "echo oops >&2; exit 1")
+
+	require.NoError(t, stdoutWriter.Close())
+
+	require.Error(t, err)
+
+	wg.Wait()
+}
+
 func TestExecuteCommandWithConfirmation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell execution tests require bash and are not supported on Windows")
+	}
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
 
@@ -317,4 +374,247 @@ func TestExecuteCommandWithConfirmation(t *testing.T) {
 	require.NoError(t, stdoutWriter.Close())
 
 	wg.Wait()
+}
+
+func TestSanitizeCommand_RemovesBidiOverrides(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "LRM (U+200E)",
+			input:    "echo\u200Etest",
+			expected: "echotest",
+		},
+		{
+			name:     "RLM (U+200F)",
+			input:    "echo\u200Ftest",
+			expected: "echotest",
+		},
+		{
+			name:     "LRE (U+202A)",
+			input:    "echo\u202Atest",
+			expected: "echotest",
+		},
+		{
+			name:     "RLE (U+202B)",
+			input:    "echo\u202Btest",
+			expected: "echotest",
+		},
+		{
+			name:     "PDF (U+202C)",
+			input:    "echo\u202Ctest",
+			expected: "echotest",
+		},
+		{
+			name:     "LRO (U+202D)",
+			input:    "echo\u202Dtest",
+			expected: "echotest",
+		},
+		{
+			name:     "RLO (U+202E)",
+			input:    "echo\u202Etest",
+			expected: "echotest",
+		},
+		{
+			name:     "LRI (U+2066)",
+			input:    "echo\u2066test",
+			expected: "echotest",
+		},
+		{
+			name:     "RLI (U+2067)",
+			input:    "echo\u2067test",
+			expected: "echotest",
+		},
+		{
+			name:     "FSI (U+2068)",
+			input:    "echo\u2068test",
+			expected: "echotest",
+		},
+		{
+			name:     "PDI (U+2069)",
+			input:    "echo\u2069test",
+			expected: "echotest",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := SanitizeCommand(tt.input)
+			require.NoError(t, err)
+			require.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestSanitizeCommand_RemovesANSIEscapes(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "CSI reset",
+			input:    "echo \x1b[0mtest",
+			expected: "echo test",
+		},
+		{
+			name:     "CSI color",
+			input:    "echo \x1b[31mred\x1b[0m",
+			expected: "echo red",
+		},
+		{
+			name:     "CSI bold",
+			input:    "\x1b[1mbold\x1b[0m text",
+			expected: "bold text",
+		},
+		{
+			name:     "OSC sequence",
+			input:    "echo \x1b]0;title\x07test",
+			expected: "echo test",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := SanitizeCommand(tt.input)
+			require.NoError(t, err)
+			require.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestSanitizeCommand_RemovesControlChars(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "NULL byte",
+			input:    "echo\x00test",
+			expected: "echotest",
+		},
+		{
+			name:     "Bell",
+			input:    "echo\x07test",
+			expected: "echotest",
+		},
+		{
+			name:     "Backspace",
+			input:    "echo\x08test",
+			expected: "echotest",
+		},
+		{
+			name:     "Vertical tab",
+			input:    "echo\x0btest",
+			expected: "echotest",
+		},
+		{
+			name:     "Form feed",
+			input:    "echo\x0ctest",
+			expected: "echotest",
+		},
+		{
+			name:     "Escape",
+			input:    "echo\x1btest",
+			expected: "echotest",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := SanitizeCommand(tt.input)
+			require.NoError(t, err)
+			require.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestSanitizeCommand_RejectsMultilineInjection(t *testing.T) {
+	// A prompt-injected `ls\nrm -rf ~` would execute both commands under
+	// `bash -c` once the user confirms. SanitizeCommand must refuse any
+	// command containing \n or \r so the caller can abort before the
+	// confirmation prompt (#360).
+	tests := []string{
+		"echo\ntest",
+		"ls\nrm -rf ~",
+		"echo hi\r\necho bye",
+		"echo\r",
+	}
+	for _, cmd := range tests {
+		t.Run(cmd, func(t *testing.T) {
+			result, err := SanitizeCommand(cmd)
+			require.ErrorIs(t, err, ErrMultilineCommand)
+			require.Empty(t, result)
+		})
+	}
+}
+
+func TestSanitizeCommand_PreservesTab(t *testing.T) {
+	// Tabs are a legitimate part of shell invocations (printf args etc)
+	// and must pass through.
+	result, err := SanitizeCommand("printf 'a\\tb'")
+	require.NoError(t, err)
+	require.Equal(t, "printf 'a\\tb'", result)
+
+	result, err = SanitizeCommand("echo\ttest")
+	require.NoError(t, err)
+	require.Equal(t, "echo\ttest", result)
+}
+
+func TestSanitizeCommand_CleanCommandUnchanged(t *testing.T) {
+	cleanCommands := []string{
+		"echo hello",
+		"ls -la",
+		"git status",
+		"rm -rf /tmp/test",
+		"cat file.txt | grep pattern",
+	}
+
+	for _, cmd := range cleanCommands {
+		t.Run(cmd, func(t *testing.T) {
+			result, err := SanitizeCommand(cmd)
+			require.NoError(t, err)
+			require.Equal(t, cmd, result)
+		})
+	}
+}
+
+func TestSanitizeCommand_ZeroWidthChars(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "Zero-width no-break space (U+FEFF)",
+			input:    "echo\uFEFFtest",
+			expected: "echotest",
+		},
+		{
+			name:     "Zero-width space (U+200B)",
+			input:    "echo\u200Btest",
+			expected: "echotest",
+		},
+		{
+			name:     "Zero-width non-joiner (U+200C)",
+			input:    "echo\u200Ctest",
+			expected: "echotest",
+		},
+		{
+			name:     "Zero-width joiner (U+200D)",
+			input:    "echo\u200Dtest",
+			expected: "echotest",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := SanitizeCommand(tt.input)
+			require.NoError(t, err)
+			require.Equal(t, tt.expected, result)
+		})
+	}
 }

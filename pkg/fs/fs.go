@@ -22,15 +22,101 @@
 package fs
 
 import (
-	"bufio"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 )
+
+const (
+	// maxInputSize is the upper limit for ReadAll (1 MiB).
+	maxInputSize = 1 << 20
+	// maxImageSize is the upper limit for LoadBase64ImageFromFile (20 MiB),
+	// matching the OpenAI vision API's per-image limit.
+	maxImageSize = 20 << 20
+)
+
+// ErrInputTooLarge is returned by ReadAll when the input exceeds maxInputSize.
+var ErrInputTooLarge = errors.New("input exceeds 1 MiB limit")
+
+// ErrImageTooLarge is returned by LoadBase64ImageFromFile when the image
+// exceeds maxImageSize.
+var ErrImageTooLarge = errors.New("image exceeds 20 MiB limit")
+
+// ErrPathOutsideCwd is returned by ResolveUnderCwd when the input path
+// resolves to a location outside the current working directory.
+var ErrPathOutsideCwd = errors.New("path is outside the working directory")
+
+// ErrNotImage is returned by GetImageFileType when the sniffed content
+// type does not begin with "image/".
+var ErrNotImage = errors.New("file is not an image")
+
+// ResolveUnderCwd resolves p to an absolute path and rejects it if it
+// escapes the current working directory. It is used to prevent --input
+// from reading arbitrary files outside the working directory and
+// transmitting their contents to the OpenAI API.
+//
+// The containment check is performed on the symlink-resolved form of both
+// the working directory and p, so a symlink placed inside the working
+// directory that targets a location outside it is rejected rather than
+// silently followed.
+func ResolveUnderCwd(p string) (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("get working directory: %w", err)
+	}
+	realCwd, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		return "", fmt.Errorf("resolve working directory: %w", err)
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", fmt.Errorf("resolve path: %w", err)
+	}
+	realAbs, err := resolveSymlinksBestEffort(abs)
+	if err != nil {
+		return "", fmt.Errorf("resolve path: %w", err)
+	}
+	rel, err := filepath.Rel(realCwd, realAbs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("%w: %q", ErrPathOutsideCwd, p)
+	}
+	// Return the symlink-resolved path, not the lexical one: callers must
+	// open the same path that was just checked for containment, otherwise
+	// a symlink swapped in between this check and the caller's os.Open
+	// would let the open silently escape cwd again (TOCTOU).
+	return realAbs, nil
+}
+
+// resolveSymlinksBestEffort resolves symlinks in p. If p does not exist
+// yet, it walks up to the nearest existing ancestor, resolves that, and
+// re-appends the unresolved remainder - this lets ResolveUnderCwd check
+// containment for paths that will be created later while still catching
+// symlinks that point outside the working directory.
+func resolveSymlinksBestEffort(p string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(p)
+	if err == nil {
+		return resolved, nil
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+	parent := filepath.Dir(p)
+	if parent == p {
+		// Reached the root without finding an existing ancestor.
+		return p, nil
+	}
+	resolvedParent, err := resolveSymlinksBestEffort(parent)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolvedParent, filepath.Base(p)), nil
+}
 
 const (
 	defaultDirPermissions = 0755
@@ -74,17 +160,33 @@ func GetPersonasPath() (string, error) {
 	return createPath(configPath, "personas")
 }
 
+// ReadString reads piped input intended as a single prompt string. Internal
+// newlines are preserved (a multi-line piped prompt must not be glued into
+// one line - see #377); only the trailing line terminator is trimmed, so
+// `echo "foo" | sgpt` still sends "foo" rather than "foo\n".
 func ReadString(in io.Reader) (string, error) {
-	var buf []byte
-	scanner := bufio.NewScanner(in)
-	for scanner.Scan() {
-		buf = append(buf, scanner.Bytes()...)
+	data, err := io.ReadAll(io.LimitReader(in, maxInputSize+1))
+	if err != nil {
+		return "", fmt.Errorf("read input: %w", err)
 	}
-	if err := scanner.Err(); err != nil {
-		return "", err
+	if len(data) > maxInputSize {
+		return "", ErrInputTooLarge
 	}
-	input := string(buf)
-	return input, nil
+	return strings.TrimRight(string(data), "\r\n"), nil
+}
+
+// ReadAll reads all bytes from in and returns them as a string, preserving newlines.
+// Unlike ReadString, this is suitable for structured data formats like YAML and JSON.
+// Returns ErrInputTooLarge if the input exceeds 1 MiB.
+func ReadAll(in io.Reader) (string, error) {
+	data, err := io.ReadAll(io.LimitReader(in, maxInputSize+1))
+	if err != nil {
+		return "", fmt.Errorf("read input: %w", err)
+	}
+	if len(data) > maxInputSize {
+		return "", ErrInputTooLarge
+	}
+	return string(data), nil
 }
 
 // GetImageFileType returns the file type of images
@@ -110,16 +212,32 @@ func GetImageFileType(inputFile string) (string, error) {
 	// Always returns a valid content-type and "application/octet-stream" if no others seemed to match.
 	contentType := http.DetectContentType(buffer)
 
+	if !strings.HasPrefix(contentType, "image/") {
+		return "", fmt.Errorf("%w: %s detected for %q", ErrNotImage, contentType, inputFile)
+	}
+
 	return contentType, nil
 }
 
-// LoadBase64ImageFromFile loads a base64 encoded image from a file
+// LoadBase64ImageFromFile loads a base64 encoded image from a file.
+// Returns ErrImageTooLarge if the file exceeds maxImageSize.
 func LoadBase64ImageFromFile(inputFile string) (string, error) {
-	// Load image from file
-	imageBytes, err := os.ReadFile(inputFile)
+	file, err := os.Open(inputFile)
 	if err != nil {
 		return "", err
 	}
+	defer func() {
+		_ = file.Close()
+	}()
+
+	imageBytes, err := io.ReadAll(io.LimitReader(file, maxImageSize+1))
+	if err != nil {
+		return "", fmt.Errorf("read image: %w", err)
+	}
+	if len(imageBytes) > maxImageSize {
+		return "", ErrImageTooLarge
+	}
+
 	// Convert image to base64
 	b64Image := base64.StdEncoding.EncodeToString(imageBytes)
 	return b64Image, nil

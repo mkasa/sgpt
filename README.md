@@ -20,9 +20,6 @@ Developed with the help of [SGPT](https://github.com/tbckr/sgpt).
 This is a Go implementation. For the original Python implementation,
 visit [shell-gpt](https://github.com/TheR1D/shell_gpt). Please keep this in mind when reporting issues.
 
-> [!NOTE]
-> Currently under heavy refactoring for v3, but v2 is still maintained.
-
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 <!-- param::isNotitle::true:: -->
@@ -42,10 +39,14 @@ visit [shell-gpt](https://github.com/TheR1D/shell_gpt). Please keep this in mind
   - [GPT-4o and GPT-4 Vision API Support](#gpt-4o-and-gpt-4-vision-api-support)
   - [o1 API Support](#o1-api-support)
   - [OpenRouter API Support](#openrouter-api-support)
+  - [Requesty API Support](#requesty-api-support)
+  - [Google Gemini Support](#google-gemini-support)
+  - [Local LLM Support](#local-llm-support)
   - [Chat Capabilities](#chat-capabilities)
   - [Generating and Executing Shell Commands](#generating-and-executing-shell-commands)
   - [Interactive Shell Sessions](#interactive-shell-sessions)
   - [Code Generation Capabilities](#code-generation-capabilities)
+  - [Prompt Templating](#prompt-templating)
   - [Enhancing Your Workflow with Bash Aliases and Functions](#enhancing-your-workflow-with-bash-aliases-and-functions)
 - [Acknowledgements](#acknowledgements)
 
@@ -72,6 +73,8 @@ visit [shell-gpt](https://github.com/TheR1D/shell_gpt). Please keep this in mind
   your workflows and making your daily tasks more efficient.
 - **OpenRouter Support:** Use [OpenRouter](https://openrouter.ai) to access various large language models (LLMs) via a
   single API, providing flexibility and convenience in your interactions with different models.
+- **Prompt Templating:** Inject structured data into prompts using Go `text/template` syntax. Pipe YAML or JSON
+  variables via stdin to build dynamic, reusable prompt patterns.
 
 By offering these versatile features, SGPT serves as a powerful tool to enhance your overall productivity, streamline
 your workflow, and simplify complex tasks.
@@ -301,6 +304,87 @@ Browse the complete list of available models on the [OpenRouter models page](htt
 > existing OpenAI API key. This allows you to use any remaining OpenAI credits when accessing OpenAI models through
 > OpenRouter.
 
+### Requesty API Support
+
+SGPT also works with the [Requesty API](https://requesty.ai), an OpenAI-compatible LLM gateway that routes to a wide
+range of models with caching, failover, and cost controls.
+
+1. Set the Requesty API base URL environment variable:
+   ```shell
+   export OPENAI_API_BASE="https://router.requesty.ai/v1"
+   ```
+
+2. Create an API key in the [Requesty dashboard](https://app.requesty.ai/router) and set it as your environment
+   variable:
+   ```shell
+   export OPENAI_API_KEY="your_requesty_key"
+   ```
+
+Once configured, you can specify any Requesty-supported model with the `-m` flag using the `provider/model` naming
+convention:
+
+```shell
+$ sgpt -m "anthropic/claude-sonnet-4-5" "mass of sun"
+The Sun's mass is approximately 2 × 10^30 kilograms (about 333,000 times the mass of Earth).
+```
+
+Browse the complete list of available models on the [Requesty models page](https://app.requesty.ai/router/list).
+
+### Google Gemini Support
+
+Google's Gemini models are reachable over an OpenAI-compatible chat completions API, so SGPT supports them without any
+Gemini-specific code. You can either go directly to Google or route through a gateway such as OpenRouter.
+
+Directly against Google's endpoint — create a key in [Google AI Studio](https://aistudio.google.com/apikey), then:
+
+```shell
+export OPENAI_API_BASE="https://generativelanguage.googleapis.com/v1beta/openai"
+export OPENAI_API_KEY="your_gemini_api_key"
+
+sgpt -m "gemini-3.5-flash" "mass of sun"
+```
+
+Or through OpenRouter, where Gemini models carry the `google/` prefix:
+
+```shell
+export OPENAI_API_BASE="https://openrouter.ai/api/v1"
+export OPENAI_API_KEY="your_openrouter_api_key"
+
+sgpt -m "google/gemini-3.5-flash" "mass of sun"
+```
+
+> [!NOTE]
+> SGPT reads the key from `OPENAI_API_KEY`, not `GEMINI_API_KEY`. The variable name refers to the protocol SGPT
+> speaks, not to the provider behind it.
+
+See [Google Gemini Support](docs/usage/gemini.md) for the trade-offs between both routes and the limitations of the
+compatibility layer.
+
+### Local LLM Support
+
+SGPT works with any OpenAI-compatible local LLM backend (Ollama, LiteLLM, vLLM, llama.cpp, etc.) by pointing
+`OPENAI_API_BASE` at the backend's URL. For local setups, plain `http://` is permitted for loopback and private
+network ranges:
+
+```shell
+export OPENAI_API_KEY="dummy"  # most local backends ignore the key but the env var must be set
+export OPENAI_API_BASE="http://localhost:11434/v1"  # e.g. Ollama
+sgpt -m "llama3" "mass of sun"
+```
+
+LAN hostnames that aren't IP literals (e.g. `http://thinkbox:8080/v1`) need an explicit opt-out because they can't
+be classified as private without DNS resolution. Pass the flag on the command line, or set the key in your config
+file:
+
+```shell
+sgpt --insecure-api-base "..."
+# or set `insecureAPIBase: true` in ~/.config/sgpt/config.yaml
+```
+
+See [Local LLM Support](docs/usage/local-llm.md) for base URLs of common backends and the LAN hostname opt-out, and
+[Query Models — Override OpenAI API base URL](docs/usage/query-models.md#override-openai-api-base-url) for the full
+validation rules and the rationale.
+
 ### Chat Capabilities
 
 SGPT provides chat functionality that enables interactive conversations with OpenAI models. You can use the `--chat`
@@ -415,6 +499,18 @@ SGPT will return the appropriate Python code to address the FizzBuzz problem.
 
 The `code` command is a default persona to generate code. For more information on personas, see
 the [docs](https://sgpt.readthedocs.io/en/latest/usage/personas/).
+
+### Prompt Templating
+
+The `--template` flag (`-T`) lets you pipe YAML or JSON data as variables into a Go template string:
+
+```shell
+$ echo "name: Dave\ncountry: France" | sgpt --template "What would {{ .name }} be called in {{ .country }}?"
+
+$ echo "lang: Python" | sgpt code --template "Write a hello world program in {{ .lang }}"
+```
+
+See the [full documentation](https://sgpt.readthedocs.io/en/latest/usage/templates/) for all options and constraints.
 
 ### Enhancing Your Workflow with Bash Aliases and Functions
 

@@ -27,10 +27,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/tbckr/sgpt/v2/pkg/fs"
 
@@ -43,6 +46,18 @@ import (
 const (
 	// envKeyOpenAIApi is the environment variable key for the OpenAI API key.
 	envKeyOpenAIApi = "OPENAI_API_KEY"
+
+	// Defaults for the OpenAI HTTP client. Without these, sgpt inherits
+	// http.Client's zero value and can hang indefinitely when the
+	// configured endpoint (OPENAI_API_BASE) is slow or unresponsive,
+	// which is particularly bad in CI/CD pipelines where there is no
+	// interactive recovery path. We intentionally do not set a client-wide
+	// Timeout because sgpt supports streaming responses that can legitimately
+	// stay open for several minutes; ResponseHeaderTimeout is enough to
+	// short-circuit slowloris-style endpoints that never produce headers.
+	defaultDialTimeout           = 10 * time.Second
+	defaultResponseHeaderTimeout = 30 * time.Second
+	defaultTLSHandshakeTimeout   = 10 * time.Second
 )
 
 var (
@@ -50,7 +65,27 @@ var (
 	DefaultModel = strings.Clone(openai.GPT3Dot5Turbo)
 	// ErrMissingAPIKey is returned, if the OPENAI_API_KEY environment variable is not set.
 	ErrMissingAPIKey = fmt.Errorf("%s env variable is not set", envKeyOpenAIApi)
+	// ErrEmptyResponse is returned when the API response contains no choices.
+	ErrEmptyResponse = errors.New("no choices returned in API response")
 )
+
+// Completer is the interface that wraps the CreateCompletion method.
+// It is satisfied by *OpenAIClient and allows CLI code to depend on an
+// abstraction rather than the concrete type, enabling lightweight fakes in tests.
+type Completer interface {
+	CreateCompletion(ctx context.Context, chatID string, prompt []string, modifier string, input []string) (string, error)
+}
+
+// ClientOption is a functional option for configuring an OpenAIClient.
+type ClientOption func(*OpenAIClient)
+
+// WithSessionManager injects a custom SessionManager into the client.
+// When not provided, CreateClient creates a FilesystemChatSessionManager automatically.
+func WithSessionManager(sm chat.SessionManager) ClientOption {
+	return func(c *OpenAIClient) {
+		c.chatSessionManager = sm
+	}
+}
 
 // OpenAIClient is a client for the OpenAI API.
 type OpenAIClient struct {
@@ -61,67 +96,141 @@ type OpenAIClient struct {
 	chatSessionManager chat.SessionManager
 }
 
-// Check if the given endpoint is an Azure OpenAI endpoint
+// isAzureOpenAIEndpoint reports whether endpoint is an Azure OpenAI host.
 func isAzureOpenAIEndpoint(endpoint string) bool {
-    // Clean the endpoint by removing trailing slash if present
-    endpoint = strings.TrimSuffix(endpoint, "/")
+	// Clean the endpoint by removing trailing slash if present.
+	endpoint = strings.TrimSuffix(endpoint, "/")
 
-    // Regular expression pattern for Azure OpenAI endpoint
-    pattern := `^https://[a-zA-Z0-9-]+\.openai\.azure\.com$`
+	// Regular expression pattern for Azure OpenAI endpoint.
+	pattern := `^https://[a-zA-Z0-9-]+\.openai\.azure\.com$`
 
-    matched, err := regexp.MatchString(pattern, endpoint)
-    if err != nil {
-        return false
-    }
-    return matched
+	matched, err := regexp.MatchString(pattern, endpoint)
+	if err != nil {
+		return false
+	}
+	return matched
 }
 
 // CreateClient creates a new OpenAI client with the given config and output writer.
-func CreateClient(config *viper.Viper, out io.Writer) (*OpenAIClient, error) {
+// Optional ClientOptions can be passed to override defaults (e.g. WithSessionManager).
+func CreateClient(config *viper.Viper, out io.Writer, opts ...ClientOption) (*OpenAIClient, error) {
 	// Check, if api key was set
 	apiKey, exists := os.LookupEnv(envKeyOpenAIApi)
 	if !exists {
 		return nil, ErrMissingAPIKey
 	}
 	clientConfig := openai.DefaultConfig(apiKey)
-	// Check, if API base url was set
-	baseURL, isBaseURLSet := os.LookupEnv("OPENAI_API_BASE")
-	if isBaseURLSet {
-		// Set base url
-		clientConfig.BaseURL = baseURL
-		slog.Debug("Setting API base url to " + baseURL)
-		if isAzureOpenAIEndpoint(baseURL) {
-			clientConfig = openai.DefaultAzureConfig(apiKey, baseURL)
-			slog.Debug("API base url looks like an Azure OpenAI endpoint")
-		}
-	}
 
-	// Set HTTP Proxy
+	// Set HTTP Proxy and sensible timeouts; the previous zero-value
+	// http.Client would hang forever on a slow or unresponsive endpoint.
 	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: defaultDialTimeout}).DialContext,
+		ResponseHeaderTimeout: defaultResponseHeaderTimeout,
+		TLSHandshakeTimeout:   defaultTLSHandshakeTimeout,
 	}
 	httpClient := &http.Client{
 		Transport: transport,
 	}
+
+	// Validate OPENAI_API_BASE before applying it; an unvalidated override
+	// can redirect the Authorization header to an attacker-controlled host.
+	// The insecureAPIBase opt-out lets users with single-label LAN hostnames
+	// (e.g. http://thinkbox:8080/v1) bypass validation entirely.
+	allowInsecure := false
+	if config != nil {
+		allowInsecure = config.GetBool("insecureAPIBase")
+	}
+	if baseURL, isSet := os.LookupEnv("OPENAI_API_BASE"); isSet {
+		if err := validateAPIBaseURL(baseURL, allowInsecure); err != nil {
+			return nil, err
+		}
+		if isAzureOpenAIEndpoint(baseURL) {
+			clientConfig = openai.DefaultAzureConfig(apiKey, baseURL)
+			slog.Debug("Azure OPENAI_API_BASE override active", "url", baseURL)
+		} else {
+			clientConfig.BaseURL = baseURL
+		}
+		if allowInsecure {
+			slog.Warn("OPENAI_API_BASE validation skipped via insecure-api-base", "url", baseURL)
+		} else {
+			slog.Debug("OPENAI_API_BASE override active", "url", baseURL)
+		}
+	}
 	clientConfig.HTTPClient = httpClient
 
-	// Initialize chat session manager
-	chatSessionManager, err := chat.NewFilesystemChatSessionManager(config)
-	if err != nil {
-		return nil, err
-	}
-	slog.Debug("Chat session manager initialized")
-
-	// Create client
+	// Build client and apply options
 	client := &OpenAIClient{
-		HTTPClient:         httpClient,
-		config:             config,
-		api:                openai.NewClientWithConfig(clientConfig),
-		out:                out,
-		chatSessionManager: chatSessionManager,
+		HTTPClient: httpClient,
+		config:     config,
+		api:        openai.NewClientWithConfig(clientConfig),
+		out:        out,
 	}
+	for _, opt := range opts {
+		opt(client)
+	}
+
+	// Fall back to filesystem-backed session manager if none was injected
+	if client.chatSessionManager == nil {
+		chatSessionManager, err := chat.NewFilesystemChatSessionManager(config)
+		if err != nil {
+			return nil, err
+		}
+		client.chatSessionManager = chatSessionManager
+		slog.Debug("Chat session manager initialized")
+	}
+
 	slog.Debug("OpenAI client created")
 	return client, nil
+}
+
+// validateAPIBaseURL accepts https for any host, and http only for loopback
+// (localhost, 127.0.0.0/8, ::1) or private addresses (RFC1918 + RFC4193 ULA).
+// This blocks the cloud IMDS attack vector (169.254.0.0/16 is link-local, not
+// private) while permitting the dominant local-LLM pattern of plain-http
+// containers on the same host. When allowInsecure is true, the check is
+// skipped entirely so users with single-label LAN hostnames (e.g.
+// http://thinkbox:8080/v1) that can't be classified by IP literal can opt out.
+//
+// Note: 100.64.0.0/10 (CGNAT, RFC6598) is intentionally NOT in the allow-list
+// because IsPrivate() does not cover it; cloud and Tailscale environments use
+// this range for infrastructure that we don't want to silently route to.
+func validateAPIBaseURL(raw string, allowInsecure bool) error {
+	if allowInsecure {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("OPENAI_API_BASE must be a valid URL: %w", err)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("OPENAI_API_BASE must include a host: %q", raw)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		host := u.Hostname()
+		if host == "localhost" {
+			return nil
+		}
+		ip := net.ParseIP(host)
+		if ip == nil {
+			return fmt.Errorf("OPENAI_API_BASE: http only allowed for loopback or RFC1918/ULA hosts; use https or set insecureAPIBase=true (--insecure-api-base or insecureAPIBase: true in config.yaml) to override: %q", raw)
+		}
+		// Explicitly reject link-local (IPv4 169.254/16 — cloud IMDS;
+		// IPv6 fe80::/10 — cross-VM same-segment exfiltration) and the
+		// IPv4 unspecified range (0.0.0.0/8 — routes ambiguously).
+		if ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+			return fmt.Errorf("OPENAI_API_BASE: http to link-local or unspecified addresses is not allowed: %q", raw)
+		}
+		if ip.IsLoopback() || ip.IsPrivate() {
+			return nil
+		}
+		return fmt.Errorf("OPENAI_API_BASE: http only allowed for loopback or RFC1918/ULA hosts; use https or set insecureAPIBase=true (--insecure-api-base or insecureAPIBase: true in config.yaml) to override: %q", raw)
+	default:
+		return fmt.Errorf("OPENAI_API_BASE scheme must be http or https: %q", raw)
+	}
 }
 
 // CreateCompletion creates a completion for the given prompt and modifier. If chatID is provided, the chat is reused
@@ -131,10 +240,7 @@ func (c *OpenAIClient) CreateCompletion(ctx context.Context, chatID string, prom
 	var messages []openai.ChatCompletionMessage
 	var err error
 
-	isChat := false
-	if chatID != "" {
-		isChat = true
-	}
+	isChat := chatID != ""
 
 	// Load existing chat messages:
 	// If this is a chat, load existing messages from chat session.
@@ -258,7 +364,7 @@ func (c *OpenAIClient) createPromptMessages(prompts, input []string) (messages [
 			imageData := i
 
 			// Check, if input is a file
-			if !strings.HasPrefix(i, "http") || !strings.HasPrefix(i, "https") {
+			if !strings.HasPrefix(i, "http") && !strings.HasPrefix(i, "https") {
 				// Input is a file, load image data
 				imageData, err = c.buildImageFileData(i)
 				if err != nil {
@@ -294,16 +400,25 @@ func (c *OpenAIClient) createPromptMessages(prompts, input []string) (messages [
 }
 
 func (c *OpenAIClient) buildImageFileData(inputFile string) (imageData string, err error) {
+	// Reject paths outside the working directory so --input cannot
+	// exfiltrate arbitrary files (e.g. /etc/passwd, ~/.ssh/id_rsa)
+	// to the OpenAI API.
+	var resolved string
+	resolved, err = fs.ResolveUnderCwd(inputFile)
+	if err != nil {
+		return
+	}
+
 	// Get image filetype
 	var filetype string
-	filetype, err = fs.GetImageFileType(inputFile)
+	filetype, err = fs.GetImageFileType(resolved)
 	if err != nil {
 		return
 	}
 
 	// Load image from file
 	var b64Image string
-	b64Image, err = fs.LoadBase64ImageFromFile(inputFile)
+	b64Image, err = fs.LoadBase64ImageFromFile(resolved)
 	if err != nil {
 		return
 	}
@@ -319,6 +434,9 @@ func (c *OpenAIClient) retrieveChatCompletion(ctx context.Context, req openai.Ch
 		return
 	}
 	slog.Debug("Received response")
+	if len(resp.Choices) == 0 {
+		return openai.ChatCompletionMessage{}, ErrEmptyResponse
+	}
 	message = resp.Choices[0].Message
 
 	_, err = fmt.Fprintln(c.out, message.Content)
@@ -349,6 +467,9 @@ func (c *OpenAIClient) retrieveChatCompletionStream(ctx context.Context, req ope
 			return openai.ChatCompletionMessage{}, streamErr
 		}
 
+		if len(response.Choices) == 0 {
+			continue
+		}
 		receivedContent := response.Choices[0].Delta.Content
 		// 1. Append received content to message
 		receivedMessage.Content += receivedContent

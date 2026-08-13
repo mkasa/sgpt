@@ -1,5 +1,122 @@
 # Changelog
 
+## [2.21.2](https://github.com/tbckr/sgpt/compare/v2.21.1...v2.21.2) (2026-07-20)
+
+
+### Bug Fixes
+
+* address security issues in chat rm, --input path containment, and image size ([#382](https://github.com/tbckr/sgpt/issues/382)) ([b3e598c](https://github.com/tbckr/sgpt/commit/b3e598c95b62893699d4e84567deb240761e7595))
+* **deps:** upgrade go to 1.26.5 ([63ef87c](https://github.com/tbckr/sgpt/commit/63ef87cdc44e35234f557744a1d17782efae1e74))
+* input/exec bugs [#377](https://github.com/tbckr/sgpt/issues/377), [#379](https://github.com/tbckr/sgpt/issues/379), [#380](https://github.com/tbckr/sgpt/issues/380), [#381](https://github.com/tbckr/sgpt/issues/381) ([#385](https://github.com/tbckr/sgpt/issues/385)) ([906aa48](https://github.com/tbckr/sgpt/commit/906aa482abedef30958dd96526884b5a90c5349e))
+
+## [2.21.1](https://github.com/tbckr/sgpt/compare/v2.21.0...v2.21.1) (2026-05-13)
+
+
+### Bug Fixes
+
+* **config:** allow http OPENAI_API_BASE for loopback and RFC1918 ([#372](https://github.com/tbckr/sgpt/issues/372)) ([08ccc0f](https://github.com/tbckr/sgpt/commit/08ccc0fa58b9fcbfcab655876c7d4972b61171d7))
+
+## [2.21.0](https://github.com/tbckr/sgpt/compare/v2.20.0...v2.21.0) (2026-05-05)
+
+
+### Features
+
+* **chat:** create session files with 0600 owner-only permissions ([#366](https://github.com/tbckr/sgpt/issues/366)) ([d29d346](https://github.com/tbckr/sgpt/commit/d29d3464496682bb94ec23c316aa9e1e81b39c01))
+* **config:** validate OPENAI_API_BASE against SSRF risks ([#367](https://github.com/tbckr/sgpt/issues/367)) ([262af09](https://github.com/tbckr/sgpt/commit/262af0936bebf0e53393e40c3360378cc8b571f9))
+* **input:** restrict --input file reads to safe roots ([#369](https://github.com/tbckr/sgpt/issues/369)) ([757d173](https://github.com/tbckr/sgpt/commit/757d17378e9ff5821d62f552ea9f30ef2641b2f5))
+* **stdin:** cap input size to prevent unbounded memory growth ([#368](https://github.com/tbckr/sgpt/issues/368)) ([151bab9](https://github.com/tbckr/sgpt/commit/151bab9f8a130cf2e868ca5124dd77cab5f512d0))
+
+## [2.20.0](https://github.com/tbckr/sgpt/compare/v2.19.0...v2.20.0) (2026-04-26)
+
+
+### Features
+
+* give the OpenAI HTTP transport dial and header timeouts ([#363](https://github.com/tbckr/sgpt/issues/363)) ([177a1cd](https://github.com/tbckr/sgpt/commit/177a1cd755e32c2e9172ffcf27f19b87914c19d7)), closes [#357](https://github.com/tbckr/sgpt/issues/357)
+* **shell:** reject multi-line LLM output so bash -c can't execute hidden commands ([#365](https://github.com/tbckr/sgpt/issues/365)) ([d3ba6ad](https://github.com/tbckr/sgpt/commit/d3ba6ad0df0c675088d74cfafa535b85e7c35985)), closes [#360](https://github.com/tbckr/sgpt/issues/360)
+
+## [2.19.0](https://github.com/tbckr/sgpt/compare/v2.18.0...v2.19.0) (2026-03-01)
+
+
+### Features
+
+* **lint:** enforce full linting and fix reported issues ([#351](https://github.com/tbckr/sgpt/issues/351)) ([14f0d36](https://github.com/tbckr/sgpt/commit/14f0d361a8a722c16c6fcada3f42c52e69902e47))
+
+
+### Bug Fixes
+
+* fix env isolation and add DI improvements ([#354](https://github.com/tbckr/sgpt/issues/354)) ([9b8bfb8](https://github.com/tbckr/sgpt/commit/9b8bfb82f30493d7b52730620a082735868c7cc1))
+
+## [2.18.0](https://github.com/tbckr/sgpt/compare/v2.17.6...v2.18.0) (2026-02-26)
+
+
+### Features
+
+* add prompt templating with --template flag ([#349](https://github.com/tbckr/sgpt/issues/349)) ([8bf40f9](https://github.com/tbckr/sgpt/commit/8bf40f9d980e41dc4126b8d719e7c36aad42d3bd))
+
+## [2.17.6](https://github.com/tbckr/sgpt/compare/v2.17.5...v2.17.6) (2026-02-18)
+
+
+### Bug Fixes
+
+* security fixes ([#347](https://github.com/tbckr/sgpt/issues/347)) ([288f76c](https://github.com/tbckr/sgpt/commit/288f76c3ea884d4399ab28910fd332a28db58eea))
+
+## [2.17.5](https://github.com/tbckr/sgpt/compare/v2.17.4...v2.17.5) (2026-02-08)
+
+
+### Bug Fixes
+
+* correct boolean logic in image URL detect ([#344](https://github.com/tbckr/sgpt/issues/344)) ([407cfd8](https://github.com/tbckr/sgpt/commit/407cfd8c2296a2cf06c7eb1c6288288421ce9a24))
+* fix govulncheck by upgrading go ([#346](https://github.com/tbckr/sgpt/issues/346)) ([33e6ce4](https://github.com/tbckr/sgpt/commit/33e6ce45207b09cefab22a745e3d5129bcf17ec0))
+
+## [2.17.4](https://github.com/tbckr/sgpt/compare/v2.17.3...v2.17.4) (2026-01-08)
+
+
+### Bug Fixes
+
+* fix goreleaser docker build ([d6d6925](https://github.com/tbckr/sgpt/commit/d6d6925225d003322527a54f6d8c5991818f0f94))
+
+## [2.17.3](https://github.com/tbckr/sgpt/compare/v2.17.2...v2.17.3) (2026-01-08)
+
+
+### Bug Fixes
+
+* fix gorelaser docker image build ([8cdcde9](https://github.com/tbckr/sgpt/commit/8cdcde99c72f13856b51271bc8f2351969c2a492))
+
+## [2.17.2](https://github.com/tbckr/sgpt/compare/v2.17.1...v2.17.2) (2026-01-08)
+
+
+### Bug Fixes
+
+* **deps:** update module github.com/spf13/cobra to v1.10.2 ([e87bc36](https://github.com/tbckr/sgpt/commit/e87bc3602b12f7db043c92f09776047f5f8e0ebf))
+* upgrade gh action to fix error ([7f5546f](https://github.com/tbckr/sgpt/commit/7f5546f1752af6adcb60b6ba64695300ef37f5e9))
+
+## [2.17.1](https://github.com/tbckr/sgpt/compare/v2.17.0...v2.17.1) (2025-10-10)
+
+
+### Bug Fixes
+
+* **deps:** update module github.com/jarcoal/httpmock to v1.4.0 ([abd2da9](https://github.com/tbckr/sgpt/commit/abd2da9b9694a26a6db250a1c3f50bc9315649de))
+* **deps:** update module github.com/jarcoal/httpmock to v1.4.1 ([b0ef981](https://github.com/tbckr/sgpt/commit/b0ef981c82bac34c9cfbbf1b5e4b9ca3aaff054e))
+* **deps:** update module github.com/muesli/mango-cobra to v1.3.0 ([f538770](https://github.com/tbckr/sgpt/commit/f538770cae2936de09ac6e4618935e934ad7a99d))
+* **deps:** update module github.com/sashabaranov/go-openai to v1.38.2 ([3615f98](https://github.com/tbckr/sgpt/commit/3615f98a5f0ddb7c4c831ec430ebf89ffded1569))
+* **deps:** update module github.com/sashabaranov/go-openai to v1.38.3 ([501a871](https://github.com/tbckr/sgpt/commit/501a871de8531918dde45bd4e54fbcda3ac99cc1))
+* **deps:** update module github.com/sashabaranov/go-openai to v1.39.0 ([86ff84f](https://github.com/tbckr/sgpt/commit/86ff84f67de4929b833c2aa96236db6a6bf59576))
+* **deps:** update module github.com/sashabaranov/go-openai to v1.39.1 ([8b874ce](https://github.com/tbckr/sgpt/commit/8b874ce922275d244440b74f04f84e61bcf64752))
+* **deps:** update module github.com/sashabaranov/go-openai to v1.40.0 ([6762dda](https://github.com/tbckr/sgpt/commit/6762dda173c3ad24277dd3fdc6b500bcc10c43ed))
+* **deps:** update module github.com/sashabaranov/go-openai to v1.40.1 ([9516dd3](https://github.com/tbckr/sgpt/commit/9516dd3e4922e9d4a2f573258df555a6ae9192f4))
+* **deps:** update module github.com/sashabaranov/go-openai to v1.40.2 ([0044c17](https://github.com/tbckr/sgpt/commit/0044c17158708b6261f8bcc5b9040656b1200cd6))
+* **deps:** update module github.com/sashabaranov/go-openai to v1.40.3 ([d4b7138](https://github.com/tbckr/sgpt/commit/d4b71382df0aaf92968b71335844362aec7af428))
+* **deps:** update module github.com/sashabaranov/go-openai to v1.40.4 ([797eb25](https://github.com/tbckr/sgpt/commit/797eb25268673ac42b872a37a0f2ca3a5a77d786))
+* **deps:** update module github.com/sashabaranov/go-openai to v1.40.5 ([0c0986b](https://github.com/tbckr/sgpt/commit/0c0986b0a0d029ba8556fc49659910e243e6dd5a))
+* **deps:** update module github.com/sashabaranov/go-openai to v1.41.0 ([63c89b6](https://github.com/tbckr/sgpt/commit/63c89b6a9e11a30099f43025775239ac3b3782e1))
+* **deps:** update module github.com/sashabaranov/go-openai to v1.41.1 ([67dbb72](https://github.com/tbckr/sgpt/commit/67dbb72a4dc1a59ac4624cc39a82736b51faec78))
+* **deps:** update module github.com/sashabaranov/go-openai to v1.41.2 ([0000ee9](https://github.com/tbckr/sgpt/commit/0000ee95ebcdf18feb3428821fe79f46aa42136d))
+* **deps:** update module github.com/spf13/cobra to v1.10.0 ([e891843](https://github.com/tbckr/sgpt/commit/e891843a065453a07ef342db2e434538c3f819fd))
+* **deps:** update module github.com/spf13/cobra to v1.10.1 ([9fddc77](https://github.com/tbckr/sgpt/commit/9fddc77feb507ab21d2e064ba8891dc60db5206f))
+* **deps:** update module github.com/spf13/viper to v1.21.0 ([d369344](https://github.com/tbckr/sgpt/commit/d369344dbaf62f7650a8a043e08b103ab06aab86))
+* **deps:** update module github.com/stretchr/testify to v1.11.0 ([b732cc2](https://github.com/tbckr/sgpt/commit/b732cc20bb4c7543ccc83576b319d0e330af2116))
+* **deps:** update module github.com/stretchr/testify to v1.11.1 ([0401ac7](https://github.com/tbckr/sgpt/commit/0401ac75fe93621040440eb8254a6e4a730ee8a2))
+
 ## [2.17.0](https://github.com/tbckr/sgpt/compare/v2.16.0...v2.17.0) (2025-04-11)
 
 

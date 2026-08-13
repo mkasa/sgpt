@@ -28,6 +28,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -36,6 +37,7 @@ import (
 
 	"github.com/atotto/clipboard"
 	"github.com/sashabaranov/go-openai"
+	"github.com/spf13/viper"
 
 	"github.com/jarcoal/httpmock"
 	"github.com/stretchr/testify/require"
@@ -46,6 +48,7 @@ import (
 func TestRootCmd_SimplePrompt(t *testing.T) {
 	testCtx := testlib.NewTestCtx(t)
 	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
 	mem := &exitMemento{}
 
 	var wg sync.WaitGroup
@@ -85,6 +88,7 @@ func TestRootCmd_SimplePrompt(t *testing.T) {
 func TestRootCmd_SimplePromptOnly(t *testing.T) {
 	testCtx := testlib.NewTestCtx(t)
 	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
 	mem := &exitMemento{}
 
 	var wg sync.WaitGroup
@@ -126,6 +130,7 @@ func TestRootCmd_SimpleClipboard(t *testing.T) {
 
 	testCtx := testlib.NewTestCtx(t)
 	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
 	mem := &exitMemento{}
 
 	var wg sync.WaitGroup
@@ -169,6 +174,7 @@ func TestRootCmd_SimpleClipboard(t *testing.T) {
 func TestRootCmd_SimplePromptOverrideValuesWithConfigFile(t *testing.T) {
 	testCtx := testlib.NewTestCtx(t)
 	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
 	mem := &exitMemento{}
 
 	var wg sync.WaitGroup
@@ -188,8 +194,9 @@ func TestRootCmd_SimplePromptOverrideValuesWithConfigFile(t *testing.T) {
 	var configFile *os.File
 	configFile, err = os.Create(filepath.Join(testCtx.ConfigDir, "config.yaml"))
 	require.NoError(t, err)
+	defer func() { _ = configFile.Close() }()
 
-	_, err = configFile.WriteString(fmt.Sprintf("model: \"%s\"\n", openai.GPT4))
+	_, err = fmt.Fprintf(configFile, "model: \"%s\"\n", openai.GPT4)
 	require.NoError(t, err)
 
 	root := newRootCmd(mem.Exit, testCtx.Config, mockIsPipedShell(false, nil), useMockClient(client))
@@ -216,6 +223,7 @@ func TestRootCmd_SimplePromptOverrideValuesWithConfigFile(t *testing.T) {
 func TestRootCmd_SimplePromptNoPrompt(t *testing.T) {
 	testCtx := testlib.NewTestCtx(t)
 	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
 	mem := &exitMemento{}
 
 	client, err := api.CreateClient(testCtx.Config, nil)
@@ -230,6 +238,7 @@ func TestRootCmd_SimplePromptNoPrompt(t *testing.T) {
 func TestRootCmd_SimplePromptVerbose(t *testing.T) {
 	testCtx := testlib.NewTestCtx(t)
 	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
 	mem := &exitMemento{}
 
 	var wg sync.WaitGroup
@@ -269,6 +278,7 @@ func TestRootCmd_SimplePromptVerbose(t *testing.T) {
 func TestRootCmd_SimplePromptViaPipedShell(t *testing.T) {
 	testCtx := testlib.NewTestCtx(t)
 	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
 	mem := &exitMemento{}
 
 	var wg sync.WaitGroup
@@ -319,6 +329,7 @@ func TestRootCmd_SimplePromptViaPipedShell(t *testing.T) {
 func TestRootCmd_PipedShell_NoInput(t *testing.T) {
 	testCtx := testlib.NewTestCtx(t)
 	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
 	mem := &exitMemento{}
 
 	var wg sync.WaitGroup
@@ -361,6 +372,7 @@ func TestRootCmd_PipedShell_NoInput(t *testing.T) {
 func TestRootCmd_SimplePrompt_PipedShellError(t *testing.T) {
 	testCtx := testlib.NewTestCtx(t)
 	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
 	mem := &exitMemento{}
 
 	var wg sync.WaitGroup
@@ -394,6 +406,7 @@ func TestRootCmd_SimplePrompt_PipedShellError(t *testing.T) {
 func TestRootCmd_SimplePromptViaPipedShellAndModifier(t *testing.T) {
 	testCtx := testlib.NewTestCtx(t)
 	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
 	mem := &exitMemento{}
 
 	var wg sync.WaitGroup
@@ -444,6 +457,7 @@ func TestRootCmd_SimplePromptViaPipedShellAndModifier(t *testing.T) {
 func TestRootCmd_PipedShellAndModifierAndPrompt(t *testing.T) {
 	testCtx := testlib.NewTestCtx(t)
 	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
 	mem := &exitMemento{}
 
 	var wg sync.WaitGroup
@@ -495,6 +509,7 @@ func TestRootCmd_PipedShellAndModifierAndPrompt(t *testing.T) {
 func TestRootCmd_SimpleShellPrompt(t *testing.T) {
 	testCtx := testlib.NewTestCtx(t)
 	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
 	mem := &exitMemento{}
 
 	var wg sync.WaitGroup
@@ -511,11 +526,7 @@ func TestRootCmd_SimpleShellPrompt(t *testing.T) {
 	t.Cleanup(httpmock.DeactivateAndReset)
 	testlib.RegisterExpectedChatResponse(response)
 
-	err = os.Setenv("SHELL", "/bin/bash")
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, os.Unsetenv("SHELL"))
-	})
+	t.Setenv("SHELL", "/bin/bash")
 
 	root := newRootCmd(mem.Exit, testCtx.Config, mockIsPipedShell(false, nil), useMockClient(client))
 	root.cmd.SetOut(writer)
@@ -537,9 +548,114 @@ func TestRootCmd_SimpleShellPrompt(t *testing.T) {
 	wg.Wait()
 }
 
-func TestRootCmd_SimpleShellPromptWithExecution(t *testing.T) {
+func TestRootCmd_ArgsPersonaCasePreservedVerbatim(t *testing.T) {
+	// #381 regression: the args-only branch used to lowercase the persona
+	// name before resolution, while the piped and --template branches did
+	// not. Persona resolution is a case-sensitive exact match against the
+	// on-disk filename, so a mixed-case custom persona supplied via args
+	// used to be silently unresolvable. It must now reach the modifier
+	// resolver verbatim, exactly like the piped/--template channels.
 	testCtx := testlib.NewTestCtx(t)
 	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
+	mem := &exitMemento{}
+
+	var wg sync.WaitGroup
+	reader, writer := io.Pipe()
+
+	client, err := api.CreateClient(testCtx.Config, writer)
+	require.NoError(t, err)
+
+	persona := "This is my custom persona"
+	prompt := "Say: Hello World!"
+	response := "Hello World!"
+	expected := "Hello World!\n"
+
+	httpmock.ActivateNonDefault(client.HTTPClient)
+	t.Cleanup(httpmock.DeactivateAndReset)
+	testlib.RegisterExpectedChatResponse(response)
+
+	t.Setenv("SHELL", "/bin/bash")
+
+	var fileHandler *os.File
+	fileHandler, err = os.Create(filepath.Join(testCtx.Config.GetString("personas"), "My-Persona"))
+	require.NoError(t, err)
+	_, err = fileHandler.WriteString(persona)
+	require.NoError(t, err)
+	require.NoError(t, fileHandler.Close())
+
+	root := newRootCmd(mem.Exit, testCtx.Config, mockIsPipedShell(false, nil), useMockClient(client))
+	root.cmd.SetOut(writer)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var buf bytes.Buffer
+		_, errReader := io.Copy(&buf, reader)
+		require.NoError(t, errReader)
+		require.NoError(t, reader.Close())
+		require.Equal(t, expected, buf.String())
+	}()
+
+	root.Execute([]string{"My-Persona", prompt})
+	require.Equal(t, 0, mem.code)
+	require.NoError(t, writer.Close())
+
+	wg.Wait()
+}
+
+func TestRootCmd_ArgsUppercaseBuiltinPersonaUnsupported(t *testing.T) {
+	// #381 regression, other half of TestRootCmd_ArgsPersonaCasePreservedVerbatim:
+	// dropping the args channel's lowercasing also removed the only case
+	// folding for built-in personas, since GetChatModifier matches "sh"/
+	// "code" with a case-sensitive switch. "SH" must now fail to resolve
+	// (exit 1) rather than silently behaving as "sh". A valid chat response
+	// is registered so the *only* way to reach a non-zero exit is modifier
+	// resolution - if lowercasing were reintroduced, "SH" would resolve to
+	// "sh", the mocked request would succeed, and this would fail by
+	// observing exit code 0 instead of 1.
+	testCtx := testlib.NewTestCtx(t)
+	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
+	mem := &exitMemento{}
+
+	reader, writer := io.Pipe()
+
+	client, err := api.CreateClient(testCtx.Config, writer)
+	require.NoError(t, err)
+
+	httpmock.ActivateNonDefault(client.HTTPClient)
+	t.Cleanup(httpmock.DeactivateAndReset)
+	testlib.RegisterExpectedChatResponse("ls")
+
+	t.Setenv("SHELL", "/bin/bash")
+
+	root := newRootCmd(mem.Exit, testCtx.Config, mockIsPipedShell(false, nil), useMockClient(client))
+	root.cmd.SetOut(writer)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, errDiscard := io.Copy(io.Discard, reader)
+		require.NoError(t, errDiscard)
+		require.NoError(t, reader.Close())
+	}()
+
+	root.Execute([]string{"SH", "list all files in the current directory"})
+	require.Equal(t, 1, mem.code)
+	require.NoError(t, writer.Close())
+
+	wg.Wait()
+}
+
+func TestRootCmd_SimpleShellPromptWithExecution(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell execution requires bash and is not supported on Windows")
+	}
+	testCtx := testlib.NewTestCtx(t)
+	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
 	mem := &exitMemento{}
 
 	var wg sync.WaitGroup
@@ -557,11 +673,7 @@ func TestRootCmd_SimpleShellPromptWithExecution(t *testing.T) {
 	t.Cleanup(httpmock.DeactivateAndReset)
 	testlib.RegisterExpectedChatResponse(response)
 
-	err = os.Setenv("SHELL", "/bin/bash")
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		_ = os.Unsetenv("SHELL")
-	})
+	t.Setenv("SHELL", "/bin/bash")
 
 	root := newRootCmd(mem.Exit, testCtx.Config, mockIsPipedShell(false, nil), useMockClient(client))
 	root.cmd.SetIn(stdinReader)
@@ -598,6 +710,7 @@ func TestRootCmd_SimpleShellPromptWithExecution(t *testing.T) {
 func TestRootCmd_SimplePromptWithChat(t *testing.T) {
 	testCtx := testlib.NewTestCtx(t)
 	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
 	mem := &exitMemento{}
 
 	var wg sync.WaitGroup
@@ -655,6 +768,7 @@ func TestRootCmd_SimplePromptWithChat(t *testing.T) {
 func TestRootCmd_SimplePromptWithChatAndCustomPersona(t *testing.T) {
 	testCtx := testlib.NewTestCtx(t)
 	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
 	mem := &exitMemento{}
 
 	var wg sync.WaitGroup
@@ -672,11 +786,7 @@ func TestRootCmd_SimplePromptWithChatAndCustomPersona(t *testing.T) {
 	t.Cleanup(httpmock.DeactivateAndReset)
 	testlib.RegisterExpectedChatResponse(response)
 
-	err = os.Setenv("SHELL", "/bin/bash")
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, os.Unsetenv("SHELL"))
-	})
+	t.Setenv("SHELL", "/bin/bash")
 
 	var fileHandler *os.File
 	fileHandler, err = os.Create(filepath.Join(testCtx.Config.GetString("personas"), "my-persona"))
@@ -731,6 +841,7 @@ func TestRootCmd_SimplePromptWithChatAndCustomPersona(t *testing.T) {
 func TestRootCmd_ChatConversation(t *testing.T) {
 	testCtx := testlib.NewTestCtx(t)
 	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
 	mem := &exitMemento{}
 
 	var wg sync.WaitGroup
@@ -796,4 +907,274 @@ func TestRootCmd_ChatConversation(t *testing.T) {
 	require.Equal(t, strings.TrimSpace(expected), messages[3].Content)
 
 	wg.Wait()
+}
+
+func TestRootCmd_PanicRecovery_ExitsWithCode1(t *testing.T) {
+	testCtx := testlib.NewTestCtx(t)
+	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
+	mem := &exitMemento{}
+
+	// Create a client factory that panics
+	panicClientFn := func(_ *viper.Viper, _ io.Writer) (api.Completer, error) {
+		panic("test panic")
+	}
+
+	root := newRootCmd(mem.Exit, testCtx.Config, mockIsPipedShell(false, nil), panicClientFn)
+
+	root.Execute([]string{"test"})
+	require.Equal(t, 1, mem.code)
+}
+
+func TestLoadViperConfig_TestingFlag(t *testing.T) {
+	config := viper.New()
+	config.Set("TESTING", 1)
+
+	err := loadViperConfig(config)
+	require.NoError(t, err)
+	// When TESTING flag is set, defaults should not be set
+	// Verify cacheDir is not set (would be set by setViperDefaults)
+	require.False(t, config.IsSet("cacheDir"))
+}
+
+func TestLoadViperConfig_NoTestingFlag(t *testing.T) {
+	testCtx := testlib.NewTestCtx(t)
+
+	err := loadViperConfig(testCtx.Config)
+	require.NoError(t, err)
+	// When TESTING flag is not set, defaults should be set
+	// Verify cacheDir is set (by setViperDefaults)
+	require.True(t, testCtx.Config.IsSet("cacheDir"))
+}
+
+func TestRootCmd_TemplateWithPipedYAML(t *testing.T) {
+	testCtx := testlib.NewTestCtx(t)
+	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
+	mem := &exitMemento{}
+
+	var wg sync.WaitGroup
+	stdinReader, stdinWriter := io.Pipe()
+	stdoutReader, stdoutWriter := io.Pipe()
+
+	client, err := api.CreateClient(testCtx.Config, stdoutWriter)
+	require.NoError(t, err)
+
+	yamlInput := "name: Dave\ncountry: France\n"
+	response := "David"
+	expected := "David\n"
+
+	httpmock.ActivateNonDefault(client.HTTPClient)
+	t.Cleanup(httpmock.DeactivateAndReset)
+	testlib.RegisterExpectedChatResponse(response)
+
+	root := newRootCmd(mem.Exit, testCtx.Config, mockIsPipedShell(true, nil), useMockClient(client))
+	root.cmd.SetIn(stdinReader)
+	root.cmd.SetOut(stdoutWriter)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, errWrite := stdinWriter.Write([]byte(yamlInput))
+		require.NoError(t, errWrite)
+		require.NoError(t, stdinWriter.Close())
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var buf bytes.Buffer
+		_, errReader := io.Copy(&buf, stdoutReader)
+		require.NoError(t, errReader)
+		require.NoError(t, stdoutReader.Close())
+		require.Equal(t, expected, buf.String())
+	}()
+
+	root.Execute([]string{"--template", "What would {{ .name }} be called in {{ .country }}?"})
+	require.Equal(t, 0, mem.code)
+	require.NoError(t, stdinReader.Close())
+	require.NoError(t, stdoutWriter.Close())
+
+	wg.Wait()
+}
+
+func TestRootCmd_TemplateWithPipedJSON(t *testing.T) {
+	testCtx := testlib.NewTestCtx(t)
+	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
+	mem := &exitMemento{}
+
+	var wg sync.WaitGroup
+	stdinReader, stdinWriter := io.Pipe()
+	stdoutReader, stdoutWriter := io.Pipe()
+
+	client, err := api.CreateClient(testCtx.Config, stdoutWriter)
+	require.NoError(t, err)
+
+	jsonInput := `{"name": "Dave", "country": "France"}`
+	response := "David"
+	expected := "David\n"
+
+	httpmock.ActivateNonDefault(client.HTTPClient)
+	t.Cleanup(httpmock.DeactivateAndReset)
+	testlib.RegisterExpectedChatResponse(response)
+
+	root := newRootCmd(mem.Exit, testCtx.Config, mockIsPipedShell(true, nil), useMockClient(client))
+	root.cmd.SetIn(stdinReader)
+	root.cmd.SetOut(stdoutWriter)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, errWrite := stdinWriter.Write([]byte(jsonInput))
+		require.NoError(t, errWrite)
+		require.NoError(t, stdinWriter.Close())
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var buf bytes.Buffer
+		_, errReader := io.Copy(&buf, stdoutReader)
+		require.NoError(t, errReader)
+		require.NoError(t, stdoutReader.Close())
+		require.Equal(t, expected, buf.String())
+	}()
+
+	root.Execute([]string{"--template", "What would {{ .name }} be called in {{ .country }}?"})
+	require.Equal(t, 0, mem.code)
+	require.NoError(t, stdinReader.Close())
+	require.NoError(t, stdoutWriter.Close())
+
+	wg.Wait()
+}
+
+func TestRootCmd_TemplateWithPersona(t *testing.T) {
+	testCtx := testlib.NewTestCtx(t)
+	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
+	mem := &exitMemento{}
+
+	var wg sync.WaitGroup
+	stdinReader, stdinWriter := io.Pipe()
+	stdoutReader, stdoutWriter := io.Pipe()
+
+	client, err := api.CreateClient(testCtx.Config, stdoutWriter)
+	require.NoError(t, err)
+
+	yamlInput := "lang: Python\n"
+	response := "print('hello')"
+	expected := "print('hello')\n"
+
+	httpmock.ActivateNonDefault(client.HTTPClient)
+	t.Cleanup(httpmock.DeactivateAndReset)
+	testlib.RegisterExpectedChatResponse(response)
+
+	root := newRootCmd(mem.Exit, testCtx.Config, mockIsPipedShell(true, nil), useMockClient(client))
+	root.cmd.SetIn(stdinReader)
+	root.cmd.SetOut(stdoutWriter)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, errWrite := stdinWriter.Write([]byte(yamlInput))
+		require.NoError(t, errWrite)
+		require.NoError(t, stdinWriter.Close())
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var buf bytes.Buffer
+		_, errReader := io.Copy(&buf, stdoutReader)
+		require.NoError(t, errReader)
+		require.NoError(t, stdoutReader.Close())
+		require.Equal(t, expected, buf.String())
+	}()
+
+	// "code" is the persona arg; template provides the rendered prompt
+	root.Execute([]string{"code", "--template", "Write hello world in {{ .lang }}"})
+	require.Equal(t, 0, mem.code)
+	require.NoError(t, stdinReader.Close())
+	require.NoError(t, stdoutWriter.Close())
+
+	wg.Wait()
+}
+
+func TestRootCmd_TemplateNotPiped_Error(t *testing.T) {
+	testCtx := testlib.NewTestCtx(t)
+	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
+	mem := &exitMemento{}
+
+	client, err := api.CreateClient(testCtx.Config, nil)
+	require.NoError(t, err)
+
+	root := newRootCmd(mem.Exit, testCtx.Config, mockIsPipedShell(false, nil), useMockClient(client))
+	root.Execute([]string{"--template", "Hello {{ .name }}"})
+	require.Equal(t, 1, mem.code)
+}
+
+func TestRootCmd_TemplateWithTwoArgs_Error(t *testing.T) {
+	testCtx := testlib.NewTestCtx(t)
+	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
+	mem := &exitMemento{}
+
+	client, err := api.CreateClient(testCtx.Config, nil)
+	require.NoError(t, err)
+
+	root := newRootCmd(mem.Exit, testCtx.Config, mockIsPipedShell(true, nil), useMockClient(client))
+	// Use a simple reader; the command fails before consuming stdin (args are validated first)
+	root.cmd.SetIn(strings.NewReader("name: Dave\n"))
+
+	// Two args: persona + prompt -- should error when --template is set
+	root.Execute([]string{"code", "extra-prompt-arg", "--template", "Hello {{ .name }}"})
+	require.Equal(t, 1, mem.code)
+}
+
+func TestRootCmd_TemplateMissingVar_Error(t *testing.T) {
+	testCtx := testlib.NewTestCtx(t)
+	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
+	mem := &exitMemento{}
+
+	var wg sync.WaitGroup
+	stdinReader, stdinWriter := io.Pipe()
+
+	client, err := api.CreateClient(testCtx.Config, nil)
+	require.NoError(t, err)
+
+	root := newRootCmd(mem.Exit, testCtx.Config, mockIsPipedShell(true, nil), useMockClient(client))
+	root.cmd.SetIn(stdinReader)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _ = stdinWriter.Write([]byte("name: Dave\n"))
+		_ = stdinWriter.Close()
+	}()
+
+	// Template references .country but it's not in the piped YAML
+	root.Execute([]string{"--template", "{{ .name }} lives in {{ .country }}"})
+	require.Equal(t, 1, mem.code)
+	require.NoError(t, stdinReader.Close())
+
+	wg.Wait()
+}
+
+func TestRootCmd_TemplateWithExecute_Error(t *testing.T) {
+	testCtx := testlib.NewTestCtx(t)
+	testlib.SetAPIKey(t)
+	testlib.SetAPIBase(t)
+	mem := &exitMemento{}
+
+	client, err := api.CreateClient(testCtx.Config, nil)
+	require.NoError(t, err)
+
+	root := newRootCmd(mem.Exit, testCtx.Config, mockIsPipedShell(true, nil), useMockClient(client))
+	// --template drains stdin; --execute also needs stdin for confirmation — must be rejected.
+	root.cmd.SetIn(strings.NewReader("cmd: ls\n"))
+	root.Execute([]string{"sh", "--template", "run {{ .cmd }}", "--execute"})
+	require.Equal(t, 1, mem.code)
 }

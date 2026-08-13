@@ -123,6 +123,9 @@ func (m FilesystemChatSessionManager) GetSession(sessionName string) ([]openai.C
 		}
 		messages = append(messages, readMessage)
 	}
+	if err = scanner.Err(); err != nil {
+		return nil, err
+	}
 	slog.Debug("Messages from session file imported")
 	return messages, nil
 }
@@ -158,8 +161,8 @@ func (m FilesystemChatSessionManager) SaveSession(sessionName string, messages [
 		}
 		slog.Debug("Existing session file opened and truncated")
 	} else {
-		// Create file
-		file, err = os.Create(sessionFilepath)
+		// Create file with owner-only permissions; sessions may contain sensitive data.
+		file, err = os.OpenFile(sessionFilepath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, defaultFilePermissions)
 		if err != nil {
 			return err
 		}
@@ -199,6 +202,11 @@ func (m FilesystemChatSessionManager) ListSessions() ([]string, error) {
 }
 
 func (m FilesystemChatSessionManager) DeleteSession(sessionName string) error {
+	// Validate session name
+	if err := validateSessionName(sessionName); err != nil {
+		return err
+	}
+
 	sessionFilepath, err := m.getFilepathForSession(sessionName)
 	slog.Debug("Deleting session file at: " + sessionFilepath)
 	if err != nil {

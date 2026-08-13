@@ -263,6 +263,25 @@ func TestFilesystemChatSessionManager_DeleteNotExistingSession(t *testing.T) {
 	require.False(t, exists)
 }
 
+func TestFilesystemChatSessionManager_DeleteSession_PathTraversal(t *testing.T) {
+	config := createTestConfig(t)
+	cacheDir := config.GetString("cacheDir")
+
+	// Sentinel file living outside the cache directory - a traversal payload
+	// would need to escape cacheDir to reach it.
+	outsideDir := filepath.Dir(cacheDir)
+	sentinel := filepath.Join(outsideDir, "sentinel.txt")
+	require.NoError(t, os.WriteFile(sentinel, []byte("do not delete"), 0o600))
+
+	manager, err := NewFilesystemChatSessionManager(config)
+	require.NoError(t, err)
+
+	traversal := ".." + string(filepath.Separator) + filepath.Base(sentinel)
+	err = manager.DeleteSession(traversal)
+	require.ErrorIs(t, err, ErrChatSessionNameInvalid)
+	require.FileExists(t, sentinel)
+}
+
 func createTestMessages() []openai.ChatCompletionMessage {
 	return []openai.ChatCompletionMessage{
 		{
@@ -288,6 +307,57 @@ func createTestConfig(t *testing.T) *viper.Viper {
 	config.Set("TESTING", 1)
 
 	return config
+}
+
+func TestFilesystemChatSessionManager_SaveSession_FilePermissions(t *testing.T) {
+	config := createTestConfig(t)
+
+	manager, err := NewFilesystemChatSessionManager(config)
+	require.NoError(t, err)
+
+	messages := createTestMessages()
+
+	// New session: file is created via os.Create.
+	err = manager.SaveSession("perm_new", messages)
+	require.NoError(t, err)
+
+	info, err := os.Stat(filepath.Join(config.GetString("cacheDir"), "perm_new"))
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0600), info.Mode().Perm(),
+		"new session file must be owner-only (0600), got %o", info.Mode().Perm())
+
+	// Existing session: file is reopened via os.OpenFile with defaultFilePermissions.
+	err = manager.SaveSession("perm_new", messages)
+	require.NoError(t, err)
+
+	info, err = os.Stat(filepath.Join(config.GetString("cacheDir"), "perm_new"))
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0600), info.Mode().Perm(),
+		"reopened session file must remain owner-only (0600), got %o", info.Mode().Perm())
+}
+
+func TestFilesystemChatSessionManager_GetSession_ScannerError(t *testing.T) {
+	config := createTestConfig(t)
+
+	manager, err := NewFilesystemChatSessionManager(config)
+	require.NoError(t, err)
+
+	// Create a session file with a line that exceeds bufio.MaxScanTokenSize (64KB)
+	// This will cause scanner.Err() to return an error
+	sessionName := "test_scanner_error"
+	sessionPath := filepath.Join(config.GetString("cacheDir"), sessionName)
+
+	// Create a file with a line longer than bufio.MaxScanTokenSize
+	// bufio.MaxScanTokenSize is 64 * 1024 = 65536 bytes
+	longContent := strings.Repeat("a", 65536+100)
+	err = os.WriteFile(sessionPath, []byte(longContent), 0600)
+	require.NoError(t, err)
+
+	// Try to load the session - should fail with scanner error
+	var messages []openai.ChatCompletionMessage
+	messages, err = manager.GetSession(sessionName)
+	require.Error(t, err)
+	require.Nil(t, messages)
 }
 
 func createTempDir(t *testing.T, suffix string) string {

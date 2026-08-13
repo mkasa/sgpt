@@ -24,12 +24,16 @@ package shell
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
+	"strings"
+	"unicode"
 )
 
 func IsPipedShell() (bool, error) {
@@ -43,7 +47,70 @@ func IsPipedShell() (bool, error) {
 	return true, nil
 }
 
+// isBidiOverride checks if a rune is a Unicode bidirectional override character
+func isBidiOverride(r rune) bool {
+	switch r {
+	case '\u200E', '\u200F', // LRM, RLM
+		'\u202A', '\u202B', '\u202C', '\u202D', '\u202E', // Embedding and override
+		'\u2066', '\u2067', '\u2068', '\u2069', // Isolate
+		'\uFEFF',                     // Zero-width no-break space
+		'\u200B', '\u200C', '\u200D': // Zero-width space, non-joiner, joiner
+		return true
+	}
+	return false
+}
+
+// ErrMultilineCommand is returned by SanitizeCommand when the LLM
+// output contains newline or carriage-return separators. bash -c treats
+// them identically to ';', so a prompt-injected multi-line response
+// would execute as multiple commands once the user confirms - see
+// #360.
+var ErrMultilineCommand = errors.New("command contains newline; rejected as potential injection")
+
+// SanitizeCommand removes ANSI escape sequences, Unicode bidi overrides, and non-printable control characters
+// from a command string to prevent display manipulation attacks. Tabs are preserved because they are
+// legitimately used in `printf` arguments etc. Newlines and carriage returns are rejected outright
+// because `bash -c` would treat them as command separators, letting a single confirmed run
+// silently execute multiple commands (#360).
+func SanitizeCommand(command string) (string, error) {
+	// Remove ANSI escape sequences (CSI and OSC)
+	ansiRegex := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07`)
+	command = ansiRegex.ReplaceAllString(command, "")
+
+	// Remove Unicode bidi overrides and zero-width characters
+	var sb strings.Builder
+	sb.Grow(len(command))
+	for _, r := range command {
+		// Skip bidi overrides and zero-width characters
+		if isBidiOverride(r) {
+			continue
+		}
+		// Skip non-printable control characters except tab.
+		// Newlines and carriage returns are handled explicitly after the
+		// cleanup pass so we can reject them with a clear error rather
+		// than silently stripping them.
+		if unicode.IsControl(r) && r != '\n' && r != '\r' && r != '\t' {
+			continue
+		}
+		sb.WriteRune(r)
+	}
+	sanitized := sb.String()
+	if strings.ContainsAny(sanitized, "\n\r") {
+		return "", ErrMultilineCommand
+	}
+	return sanitized, nil
+}
+
 func ExecuteCommandWithConfirmation(ctx context.Context, input io.Reader, output io.Writer, command string) error {
+	// Sanitize command to prevent display manipulation and reject
+	// multi-line payloads before the user is given a confirmation prompt
+	// that can't see the hidden trailing commands.
+	sanitized, err := SanitizeCommand(command)
+	if err != nil {
+		fmt.Fprintf(output, "Refusing to execute suggested command: %s\n", err.Error())
+		return err
+	}
+	command = sanitized
 	// Require user confirmation
 	ok, err := getUserConfirmation(input, output)
 	if err != nil {
@@ -56,23 +123,28 @@ func ExecuteCommandWithConfirmation(ctx context.Context, input io.Reader, output
 }
 
 func getUserConfirmation(input io.Reader, output io.Writer) (bool, error) {
+	// Constructed once, outside the loop: bufio.Reader fills its internal
+	// buffer from input on first use, so rebuilding it every iteration would
+	// discard any bytes already buffered but not yet consumed (#379).
+	reader := bufio.NewReader(input)
 	for {
 		if _, err := fmt.Fprint(output, "Do you want to execute this command? (Y/n) "); err != nil {
 			return false, err
 		}
-		reader := bufio.NewReader(input)
 		char, _, err := reader.ReadRune()
 		if err != nil {
 			return false, err
 		}
-		if char == '\n' || char == '\r' || char == 'Y' || char == 'y' {
+		switch char {
+		case '\n', '\r', 'Y', 'y':
 			slog.Debug("User confirmed")
 			return true, nil
-		} else if char == 'N' || char == 'n' {
+		case 'N', 'n':
 			slog.Debug("User denied")
 			return false, nil
+		default:
+			slog.Debug("User entered unrecognised input for confirmation")
 		}
-		slog.Debug("User entered unrecognised input for confirmation: " + string(char))
 	}
 }
 
@@ -92,6 +164,9 @@ func executeShellCommand(ctx context.Context, output io.Writer, command string) 
 
 	cmd := exec.CommandContext(ctx, executeCommand, args...)
 	cmd.Stdout = output
+	// Without Stderr wired, os/exec discards it entirely, leaving the user
+	// with only a bare "exit status N" on failure (#380).
+	cmd.Stderr = output
 	err := cmd.Run()
 	if err != nil {
 		return err

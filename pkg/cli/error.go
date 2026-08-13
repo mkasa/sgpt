@@ -31,18 +31,10 @@ type exitError struct {
 	details string
 }
 
-func wrapErrorWithCode(err error, code int, details string) *exitError {
-	return &exitError{
-		err:     err,
-		code:    code,
-		details: details,
-	}
-}
-
-func wrapError(err error, details string) *exitError {
-	return wrapErrorWithCode(err, 1, details)
-}
-
 func (e *exitError) Error() string {
 	return e.err.Error()
+}
+
+func (e *exitError) Unwrap() error {
+	return e.err
 }

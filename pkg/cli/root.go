@@ -26,7 +26,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"strings"
 
 	"github.com/tbckr/sgpt/v2/pkg/api"
 	"github.com/tbckr/sgpt/v2/pkg/fs"
@@ -45,6 +44,7 @@ type rootCmd struct {
 	execute         bool
 	copyToClipboard bool
 	input           []string
+	templateStr     string
 
 	verbose bool
 }
@@ -68,13 +68,16 @@ func Execute(args []string) {
 		slog.Error("Failed to create viper config", "error", err)
 		os.Exit(1)
 	}
-	newRootCmd(os.Exit, viperConfig, shell.IsPipedShell, api.CreateClient).Execute(args)
+	newRootCmd(os.Exit, viperConfig, shell.IsPipedShell, func(v *viper.Viper, w io.Writer) (api.Completer, error) {
+		return api.CreateClient(v, w)
+	}).Execute(args)
 }
 
 func (r *rootCmd) Execute(args []string) {
 	defer func() {
 		if err := recover(); err != nil {
 			slog.Error("Panic occurred", "error", err)
+			r.exit(1)
 		}
 	}()
 
@@ -103,7 +106,7 @@ func (r *rootCmd) Execute(args []string) {
 	r.exit(0)
 }
 
-func newRootCmd(exit func(int), config *viper.Viper, isPipedShell func() (bool, error), createClientFn func(*viper.Viper, io.Writer) (*api.OpenAIClient, error)) *rootCmd {
+func newRootCmd(exit func(int), config *viper.Viper, isPipedShell func() (bool, error), createClientFn func(*viper.Viper, io.Writer) (api.Completer, error)) *rootCmd {
 	root := &rootCmd{
 		exit: exit,
 	}
@@ -150,6 +153,12 @@ $ sgpt sh --chat ls-files "list all files directory"
 ls
 $ sgpt sh --chat ls-files "sort by name"
 ls | sort
+
+# Use a template with piped YAML variables
+$ echo "name: Dave\ncountry: France" | sgpt --template "What would {{ .name }} be called in {{ .country }}?"
+
+# Use a template with a persona
+$ echo "lang: Python" | sgpt code --template "Write a hello world program in {{ .lang }}"
 `,
 		DisableFlagsInUseLine: true,
 		SilenceUsage:          true,
@@ -176,7 +185,44 @@ ls | sort
 			var prompts []string
 			mode := "txt"
 
-			if isPiped {
+			if root.templateStr != "" {
+				// Template mode: piped input provides YAML/JSON variables; template string is the prompt.
+				if !isPiped {
+					return ErrTemplateRequiresPipe
+				}
+				// --execute reads stdin for confirmation after the command is generated, but
+				// --template already drains stdin for variable data. Prohibit the combination.
+				if root.execute {
+					return ErrTemplateWithExecute
+				}
+				// With --template, args can be: none (mode=txt) or one (mode=persona).
+				// Two args would mean both a persona AND a positional prompt, which conflicts.
+				if len(args) == 2 {
+					return ErrTemplateWithTwoArgs
+				}
+				slog.Debug("Template mode: reading piped variables")
+				var rawData string
+				rawData, err = fs.ReadAll(cmd.InOrStdin())
+				if err != nil {
+					return err
+				}
+				var vars map[string]any
+				vars, err = parseTemplateData(rawData)
+				if err != nil {
+					return err
+				}
+				var rendered string
+				rendered, err = renderTemplate(root.templateStr, vars)
+				if err != nil {
+					return err
+				}
+				prompts = append(prompts, rendered)
+				if len(args) == 1 {
+					slog.Debug("Persona provided via command line args")
+					mode = args[0]
+				}
+
+			} else if isPiped {
 				var stdinInput string
 				slog.Debug("Piped shell detected")
 				// input is provided via stdin
@@ -210,13 +256,17 @@ ls | sort
 				} else {
 					// input and mode are provided via command line args
 					slog.Debug("Mode and prompt provided via command line args")
-					mode = strings.ToLower(args[0])
+					// Passed verbatim, matching the piped and --template
+					// channels: persona resolution is a case-sensitive exact
+					// match, so lowercasing only here silently broke
+					// case-sensitive custom personas supplied via args (#381).
+					mode = args[0]
 					prompts = append(prompts, args[1])
 				}
 			}
 
 			// Create client
-			var client *api.OpenAIClient
+			var client api.Completer
 			client, err = createClientFn(config, cmd.OutOrStdout())
 			if err != nil {
 				return err
@@ -250,6 +300,7 @@ ls | sort
 	cmd.Flags().BoolVarP(&root.copyToClipboard, "clipboard", "b", false, "send client response to clipboard")
 	cmd.Flags().StringVarP(&root.chat, "chat", "c", "", "use an existing chat session or create a new one")
 	cmd.Flags().StringSliceVarP(&root.input, "input", "i", nil, "provide images via command line args to a file or url (experimental)")
+	cmd.Flags().StringVarP(&root.templateStr, "template", "T", "", "Go template string; piped input provides template variables (YAML/JSON)")
 
 	// flags with config binding
 	createFlagsWithConfigBinding(cmd, config)
@@ -257,6 +308,21 @@ ls | sort
 	// verbose persistent flag
 	cmd.PersistentFlags().BoolVarP(&root.verbose, "verbose", "v", false,
 		"enable more verbose output for debugging")
+
+	// insecure-api-base persistent flag — opt-out for OPENAI_API_BASE validation,
+	// needed for LAN hostnames (single-label, mDNS) that can't be classified by
+	// IP literal. Deliberately NOT bound to an env var: the #358 threat model
+	// assumes attacker control of environment, and an env-var opt-out would
+	// undo the validation guarantee. The flag plus a config-file key
+	// (insecureAPIBase) are intentional opt-ins that require either CLI access
+	// or write access to ~/.config/sgpt/, both of which are stronger trust
+	// signals than env var manipulation.
+	cmd.PersistentFlags().Bool("insecure-api-base", false,
+		"skip OPENAI_API_BASE validation (allows arbitrary http:// hosts)")
+	if err := config.BindPFlag("insecureAPIBase", cmd.PersistentFlags().Lookup("insecure-api-base")); err != nil {
+		slog.Error("Failed to bind insecure-api-base flag to viper", "error", err)
+		panic("Failed to bind insecure-api-base flag to viper")
+	}
 
 	cmd.AddCommand(
 		newChatCmd(config).cmd,
@@ -314,7 +380,7 @@ func createFlagsWithConfigBinding(cmd *cobra.Command, config *viper.Viper) {
 }
 
 func loadViperConfig(config *viper.Viper) error {
-	if !viper.IsSet("TESTING") {
+	if !config.IsSet("TESTING") {
 		slog.Debug("Loading config")
 		err := setViperDefaults(config)
 		if err != nil {
@@ -359,6 +425,8 @@ func setViperDefaults(config *viper.Viper) error {
 	config.SetDefault("topP", 1)
 	// stream
 	config.SetDefault("stream", false)
+	// insecure-api-base
+	config.SetDefault("insecureAPIBase", false)
 
 	return nil
 }

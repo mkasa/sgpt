@@ -19,22 +19,59 @@
 //
 // SPDX-License-Identifier: MIT
 
-package buildinfo
+package cli
 
-var (
-	version    = "v2.21.2" // x-release-please-version
-	commit     = "unset"
-	commitDate = "unset"
+import (
+	"errors"
+	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-func Version() string {
-	return version
+func TestExitError_Error(t *testing.T) {
+	baseErr := errors.New("test error")
+	exitErr := &exitError{
+		err:     baseErr,
+		code:    42,
+		details: "test details",
+	}
+
+	require.Equal(t, "test error", exitErr.Error())
 }
 
-func Commit() string {
-	return commit
+func TestExitError_Unwrap(t *testing.T) {
+	baseErr := errors.New("test error")
+	exitErr := &exitError{
+		err:     baseErr,
+		code:    42,
+		details: "test details",
+	}
+
+	require.Equal(t, baseErr, exitErr.Unwrap())
 }
 
-func CommitDate() string {
-	return commitDate
+func TestExitError_ErrorsIs(t *testing.T) {
+	baseErr := errors.New("test error")
+	exitErr := &exitError{
+		err:     baseErr,
+		code:    42,
+		details: "test details",
+	}
+
+	require.True(t, errors.Is(exitErr, baseErr))
+	require.False(t, errors.Is(exitErr, errors.New("different error")))
+}
+
+func TestExitError_ErrorsAs(t *testing.T) {
+	baseErr := errors.New("test error")
+	exitErr := &exitError{
+		err:     baseErr,
+		code:    42,
+		details: "test details",
+	}
+
+	var target *exitError
+	require.True(t, errors.As(exitErr, &target))
+	require.Equal(t, 42, target.code)
+	require.Equal(t, "test details", target.details)
 }
